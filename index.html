@@ -185,6 +185,10 @@ h1:focus,h2:focus{outline:none}
 .facts{list-style:none;margin:0;padding:0;display:flex;flex-direction:column}
 .facts li{padding:10px 0;border-top:1.5px dashed rgba(23,24,31,.35)}
 .facts li:last-child{border-bottom:1.5px dashed rgba(23,24,31,.35)}
+.ccheck{list-style:none;margin:14px 0;padding:0;display:flex;flex-direction:column;gap:10px}
+.ccheck li{border:2px solid var(--ink);border-radius:4px;padding:10px 12px;background:var(--face)}
+.ccheck li b{display:block}.ccheck li span{display:block;margin-top:4px;font-size:15px}
+.ccheck li.ok{background:#e6f2df}.ccheck li.bad{background:#f8e1dc}.ccheck li.wait{opacity:.7}
 
 /* checkboxes */
 .checks{display:flex;flex-direction:column;gap:12px}
@@ -436,7 +440,7 @@ const CONFIG = {
   LISTEN_SECONDS: 180,
   HARDER_EACH_PUZZLE: 0.02,     // each puzzle is 2% harder than the one before (less time to memorize the cards)
   MUSIC: { A: 'music/track-1.mp3', B: 'music/track-2.mp3' },   // A = odd birth months, B = even
-  FORM_VERSION: '1.1'
+  FORM_VERSION: '1.2'
 };
 const PREVIEW = !CONFIG.ENDPOINT;
 // Skip/jump bar and #test mode exist only on the local preview copy (no endpoint).
@@ -660,7 +664,8 @@ const SCREENS = {
   listen:  { label: 'Listening',        track: 4, cap: null, stage: true, render: rListen },
   rating3: { label: 'Rating 3',         track: 5, cap: RATING_CAP, render: el => rRating(el, 3, 'checks') },
   checks:  { label: 'Check questions',  track: 5, cap: '[almost done.]', render: rChecks },
-  end:     { label: 'Thank you',        track: 6, cap: "[that's the show. thank you.]", render: rEnd }
+  end:     { label: 'Thank you',        track: 6, cap: "[that's the show. thank you.]", render: rEnd },
+  check:   { label: 'Connection check', track: 1, cap: '[for jhian: is the sheet connected?]', render: rCheck }
 };
 
 function go(id) {
@@ -707,6 +712,71 @@ function gate(el, btn, missing, onGo, msg) {
   btn.onclick = () => { const m = missing(); if (m) { need.hidden = false; nudge(m); return; } onGo(); };
 }
 
+
+/* ================= connection check: open the form link with #check at the end ================= */
+function rCheck(el) {
+  const esc = t => String(t == null ? '' : t).replace(/[&<>"]/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
+  el.innerHTML = '<h1>Connection check</h1>' +
+    '<p class="byline">For Jhian: this page tests whether answers can reach your Google Sheet. Students never see it.</p>' +
+    '<ol class="ccheck" id="cc"></ol>' +
+    '<div class="actions"><button class="btn" id="ctest" hidden>Send one test row</button></div>';
+  const list = $('#cc', el);
+  const add = (ok, title, fix) => {
+    const li = document.createElement('li');
+    li.className = ok === true ? 'ok' : ok === false ? 'bad' : 'wait';
+    li.innerHTML = '<b>' + (ok === true ? '✓ ' : ok === false ? '✗ ' : '… ') + title + '</b>' + (fix ? '<span>' + fix + '</span>' : '');
+    list.appendChild(li); return li;
+  };
+  const url = CONFIG.ENDPOINT;
+  if (!url) {
+    add(false, 'config.js has no link yet.', 'On GitHub, open config.js, click the pencil, paste the Web app link (it ends in /exec) between the quotes, and commit. Wait a minute, then reload this page.');
+    return;
+  }
+  add(true, 'config.js has a link.');
+  if (!/^https:\/\/script\.google\.com\/macros\/s\/[^/?#]+\/exec\/?$/.test(url)) {
+    let fix = 'In Apps Script, click Deploy, then Manage deployments, and copy the Web app URL that ends in /exec. Paste that into config.js.';
+    if (/\/dev\/?$/.test(url)) fix = 'This is the test link that ends in /dev. ' + fix;
+    else if (/docs\.google\.com/.test(url)) fix = 'This is the Google Sheet\'s own link, not the script link. ' + fix;
+    else if (/script\.google\.com\/(home|d\/)/.test(url)) fix = 'This is the link to the code editor, not the web app. ' + fix;
+    add(false, 'The link in config.js is the wrong kind.', fix);
+    return;
+  }
+  add(true, 'The link is the right kind (it ends in /exec).');
+  const asking = add(null, 'Asking Google…');
+  fetch(url + '?check=1', { cache: 'no-store' }).then(r => r.text()).then(t => {
+    asking.remove();
+    let j = null; try { j = JSON.parse(t); } catch (e) {}
+    if (!j) {
+      add(false, 'Google sent back an error page instead of an answer.', 'In Apps Script, choose <b>setup</b> in the menu next to the Run button, click <b>Run</b>, and allow access. Then click Deploy, Manage deployments, the pencil icon, Version: <b>New version</b>, and Deploy.');
+      return;
+    }
+    if (!j.ok) { add(false, 'The script answered with a problem: ' + esc(j.error), esc(j.fix)); return; }
+    add(true, 'Connected to the Google Sheet "' + esc(j.spreadsheet || '') + '".',
+      'Answers go to the tab named <b>' + esc(j.sheet || 'Responses') + '</b> at the bottom of the sheet, not Sheet1. Rows saved so far: <b>' + esc(j.rows) + '</b>.' +
+      (j.version ? '' : ' <br>This is the old version of the script. Paste the new Code.gs into Apps Script, save, then Deploy, Manage deployments, the pencil icon, Version: New version, Deploy.'));
+    $('#ctest', el).hidden = false;
+  }).catch(() => {
+    asking.remove();
+    add(false, 'Google blocked the connection.', 'In Apps Script, click Deploy, Manage deployments, the pencil icon, and set Who has access to <b>Anyone</b> (not "Anyone with a Google account"). Click Deploy. If the script is brand new, open the /exec link in a new tab once and allow access.');
+  });
+  $('#ctest', el).onclick = async () => {
+    const btn = $('#ctest', el); btn.disabled = true; btn.textContent = 'Sending…';
+    const now = new Date().toISOString();
+    const row = { response_id: 'check-' + uid(), test: 'yes', started_at: now, finished_at: now, rating_1: 5, rating_2: 5, rating_3: 5,
+      group: 'A', birth_month: 'January', interruption_note: 'connection check row (delete me)', form_version: CONFIG.FORM_VERSION };
+    try {
+      const res = await fetch(url, { method: 'POST', body: JSON.stringify(row) });
+      const j = await res.json();
+      if (!j.ok) throw new Error(j.error || 'not saved');
+      add(true, 'Test row saved.', 'Open the <b>Responses</b> tab. The newest row has test = yes and says "connection check row". Delete it before real answers come in.');
+      btn.hidden = true;
+    } catch (e) {
+      add(false, 'The test row did not save.', 'The script said: ' + esc(e.message) + '. Make sure you pasted the newest Code.gs and deployed a New version.');
+      btn.disabled = false; btn.textContent = 'Try again';
+    }
+  };
+}
+
 /* ================= 1 hello ================= */
 function rWelcome(el) {
   if (CONFIG.CLOSED && !TEST) {
@@ -721,7 +791,7 @@ function rWelcome(el) {
     '<p>Hi! For my research, I\'m studying how music affects the way students feel after a short task.</p>' +
     '<ul class="facts">' +
       '<li><b>What you\'ll do:</b> answer a few questions, solve some quick puzzles, listen to 3 minutes of music, then answer a few more questions.</li>' +
-      '<li><b>Who can join:</b> Grade 11 Touch Curated students at VCIS who can listen with headphones and have no known hearing problems.</li>' +
+      '<li><b>Who can join:</b> Grade 11 Touch Curated students at VCIS (School Year 2026-2027) who can listen with headphones and have no known hearing problems.</li>' +
       '<li><b>What you need:</b> headphones and a quiet place.</li>' +
       '<li><b>Your privacy:</b> this form doesn\'t ask for your name or email. Your answers are kept private and deleted after the research is finished.</li>' +
       '<li><b>You can stop anytime</b> by closing this page. Nothing is sent unless you reach the end.</li>' +
@@ -1348,8 +1418,8 @@ function resendPending() {
 }
 buildScene();
 setupBar();
-go('welcome');
-resendPending();
+if (/^#check$/i.test(location.hash)) go('check');
+else { go('welcome'); resendPending(); }
 })();
 </script>
 </body>
